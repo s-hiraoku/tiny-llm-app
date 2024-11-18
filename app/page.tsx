@@ -16,7 +16,7 @@ export default function OnnxQA() {
       );
 
       const inputs = await tokenizer(question, context, {
-        padding: true,
+        padding: "max_length",
         truncation: true,
         max_length: 512,
         return_tensors: "pt",
