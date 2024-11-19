@@ -60,22 +60,74 @@ export async function performQAInference({
     const startLogits = Object.values(output.start_logits.cpuData);
     const endLogits = Object.values(output.end_logits.cpuData);
 
-    // 最も確率の高い開始位置と終了位置を取得
-    const startPosition = startLogits.indexOf(Math.max(...startLogits));
-    const endPosition = endLogits.indexOf(Math.max(...endLogits));
+    // ソフトマックス関数を使用して確率を計算
+    function softmax(logits: number[]) {
+      const max = Math.max(...logits);
+      const exp = logits.map((x) => Math.exp(x - max));
+      const sum = exp.reduce((a, b) => a + b, 0);
+      return exp.map((x) => x / sum);
+    }
+
+    const softmaxStartLogits = softmax(startLogits);
+    const softmaxEndLogits = softmax(endLogits);
+
+    let startPosition = softmaxStartLogits.indexOf(
+      Math.max(...softmaxStartLogits)
+    );
+    let endPosition = softmaxEndLogits.indexOf(Math.max(...softmaxEndLogits));
 
     // 有効な開始位置と終了位置の確認
     if (
       startPosition === -1 ||
       endPosition === -1 ||
-      startPosition >= endPosition ||
       startPosition >= inputIds.length ||
-      endPosition >= inputIds.length
+      endPosition >= inputIds.length ||
+      startPosition >= endPosition
     ) {
-      return {
-        answer: "回答を抽出できませんでした",
-        score: 0,
-      };
+      // より詳細な診断情報を出力
+      console.log("Diagnostic Information:", {
+        startLogits,
+        endLogits,
+        softmaxStartLogits,
+        softmaxEndLogits,
+        startPosition,
+        endPosition,
+        inputIdsLength: inputIds.length,
+      });
+
+      // トップ5の候補位置を検出
+      const topStartPositions = softmaxStartLogits
+        .map((prob, index) => ({ prob, index }))
+        .sort((a, b) => b.prob - a.prob)
+        .slice(0, 5);
+
+      const topEndPositions = softmaxEndLogits
+        .map((prob, index) => ({ prob, index }))
+        .sort((a, b) => b.prob - a.prob)
+        .slice(0, 5);
+
+      console.log("Top Start Positions:", topStartPositions);
+      console.log("Top End Positions:", topEndPositions);
+
+      // より賢明な位置選択
+      const validStartPositions = topStartPositions.filter(
+        (pos) => pos.index < inputIds.length
+      );
+      const validEndPositions = topEndPositions.filter(
+        (pos) =>
+          pos.index < inputIds.length &&
+          pos.index > validStartPositions[0]?.index
+      );
+
+      if (validStartPositions.length > 0 && validEndPositions.length > 0) {
+        startPosition = validStartPositions[0].index;
+        endPosition = validEndPositions[0].index;
+      } else {
+        return {
+          answer: "回答を抽出できませんでした",
+          score: 0,
+        };
+      }
     }
 
     // トークンを元のテキストに変換して回答を抽出
@@ -83,6 +135,7 @@ export async function performQAInference({
 
     // answer_tokensが空でないことを確認
     if (answer_tokens.length === 0) {
+      console.log("🚀 ~ answer_tokens:", answer_tokens);
       return {
         answer: "回答を抽出できませんでした",
         score: 0,
@@ -90,6 +143,24 @@ export async function performQAInference({
     }
 
     const answer = await tokenizer.decode(answer_tokens);
+
+    // const answer = await tokenizer.decode(answer_tokens, {
+    //   skip_special_tokens: true,
+    //   clean_up_tokenization_spaces: false,
+    // });
+
+    // const answer = await tokenizer.decode(answer_tokens, {
+    //   skip_special_tokens: true,
+    //   clean_up_tokenization_spaces: true,
+    //   group_tokens: true,
+    // });
+
+    console.log("Input IDs:", inputIds);
+    console.log("Start Logits:", startLogits);
+    console.log("End Logits:", endLogits);
+    console.log("Start Position:", startPosition);
+    console.log("End Position:", endPosition);
+    console.log("Answer Tokens:", answer_tokens);
 
     // スコアの計算（開始位置と終了位置の確率の平均）
     const score = (startLogits[startPosition] + endLogits[endPosition]) / 2;
